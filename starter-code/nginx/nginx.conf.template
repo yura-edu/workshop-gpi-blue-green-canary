@@ -1,0 +1,53 @@
+# =============================================================================
+# Nginx upstream configuration template
+# Complete the upstream block below to implement your chosen deployment strategy
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# OPCIÓN A: Blue-Green
+# Define dos upstreams y apunta solo a uno a la vez.
+# Para el rollout: redirige a green. Para el rollback: regresa a blue.
+# -----------------------------------------------------------------------------
+# upstream app {
+#     server app-blue:3000;   # Blue activo (estable)
+#     # server app-green:3000; # Green activo (nueva versión)
+# }
+
+# -----------------------------------------------------------------------------
+# OPCIÓN B: Canary
+# Define un upstream con pesos para dividir el tráfico gradualmente.
+# Ajusta los pesos para controlar el porcentaje de canary (10% → 50% → 100%).
+# -----------------------------------------------------------------------------
+# upstream app {
+#     server app-stable:3000 weight=90;  # 90% → versión estable
+#     server app-canary:3000 weight=10;  # 10% → versión canary
+# }
+
+# TODO: Descomenta UNO de los bloques upstream arriba (A o B) y configúralo.
+upstream app {
+    server localhost:3000;  # Reemplaza con la configuración correcta
+}
+
+server {
+    listen 80;
+
+    # Health check del propio Nginx (no redirige a la app)
+    location /nginx-health {
+        access_log off;
+        return 200 '{"ok":true,"service":"nginx"}';
+        add_header Content-Type application/json;
+    }
+
+    # Todo el tráfico de aplicación va al upstream configurado arriba
+    location / {
+        proxy_pass http://app;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Agrega header para identificar qué instancia respondió (útil para verificar el tráfico dividido)
+        add_header X-Upstream-Addr $upstream_addr always;
+    }
+}

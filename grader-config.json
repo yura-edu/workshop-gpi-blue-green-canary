@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "1.0",
+  "templateSlug": "gpi-blue-green-canary",
+  "evaluationBlocks": [
+    {
+      "blockId": "auto",
+      "evaluationType": "automated_pipeline",
+      "metrics": [
+        {
+          "metricKey": "manifest_valid",
+          "worker": "ConfigWorker",
+          "weight": 25,
+          "threshold": 1.0,
+          "config": {
+            "patterns": [
+              "compose.blue-green.yml",
+              "compose.blue-green.yaml",
+              "compose.canary.yml",
+              "compose.canary.yaml"
+            ],
+            "validator": "yamllint"
+          }
+        },
+        {
+          "metricKey": "rollback_documented",
+          "worker": "FileWorker",
+          "weight": 25,
+          "threshold": 1.0,
+          "config": {
+            "file": "docs/deploy-strategy.md",
+            "containsKeywords": ["rollback"]
+          }
+        },
+        {
+          "metricKey": "health_check_configured",
+          "worker": "ConfigWorker",
+          "weight": 25,
+          "threshold": 1.0,
+          "config": {
+            "patterns": [
+              "compose.blue-green.yml",
+              "compose.blue-green.yaml",
+              "compose.canary.yml",
+              "compose.canary.yaml"
+            ],
+            "requiredKeys": ["healthcheck"]
+          }
+        },
+        {
+          "metricKey": "ci_pipeline_passes",
+          "worker": "GitHubApiWorker",
+          "weight": 25,
+          "threshold": 1.0,
+          "config": {
+            "requireAllPassing": true
+          }
+        }
+      ]
+    }
+  ]
+}

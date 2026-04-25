@@ -1,0 +1,201 @@
+name: Grader
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python (for YAML validation)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+
+      # ── Métrica: manifest_valid ───────────────────────────────────────────
+      - name: Find and validate compose files
+        id: manifest_valid
+        run: |
+          FILES=""
+          for f in compose.blue-green.yml compose.blue-green.yaml \
+                    compose.canary.yml compose.canary.yaml; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+
+          if [ -z "$FILES" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No compose file found (expected compose.blue-green.yml or compose.canary.yml)"
+            exit 0
+          fi
+
+          VALID=true
+          for f in $FILES; do
+            yamllint -d relaxed "$f" || VALID=false
+          done
+
+          if $VALID; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Compose files are valid YAML"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ Compose files have YAML errors"
+          fi
+
+      # ── Métrica: rollback_documented ─────────────────────────────────────
+      - name: Check rollback documented
+        id: rollback_documented
+        run: |
+          if [ ! -f "docs/deploy-strategy.md" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ docs/deploy-strategy.md not found"
+            exit 0
+          fi
+
+          if grep -qi "rollback" docs/deploy-strategy.md; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Rollback section found in docs/deploy-strategy.md"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No 'rollback' mention in docs/deploy-strategy.md"
+          fi
+
+      # ── Métrica: health_check_configured ─────────────────────────────────
+      - name: Check healthcheck in compose
+        id: health_check_configured
+        run: |
+          FILES=""
+          for f in compose.blue-green.yml compose.blue-green.yaml \
+                    compose.canary.yml compose.canary.yaml; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+
+          if [ -z "$FILES" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No compose file to check"
+            exit 0
+          fi
+
+          FOUND=false
+          for f in $FILES; do
+            if grep -q "healthcheck" "$f"; then
+              FOUND=true
+              echo "✅ healthcheck found in $f"
+            fi
+          done
+
+          if $FOUND; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ No 'healthcheck' key found in compose files"
+          fi
+
+      # ── Métrica: ci_pipeline_passes ───────────────────────────────────────
+      - name: Check student CI pipeline status
+        id: ci_passes
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          CHECKS=$(gh api \
+            "repos/${{ github.repository }}/commits/${HEAD_SHA}/check-runs" \
+            --jq '[.check_runs[] | select(.name != "grade")] | { total: length, passing: [.[] | select(.conclusion == "success")] | length }' \
+            2>/dev/null || echo '{"total":0,"passing":0}')
+
+          TOTAL=$(echo "$CHECKS" | node -e "console.log(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).total)")
+          PASSING=$(echo "$CHECKS" | node -e "console.log(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).passing)")
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "score=null" >> "$GITHUB_OUTPUT"
+            echo "passed=null" >> "$GITHUB_OUTPUT"
+            echo "unavailable=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️  No CI check runs found yet"
+          elif [ "$TOTAL" -eq "$PASSING" ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "unavailable=false" >> "$GITHUB_OUTPUT"
+            echo "✅ All $TOTAL CI checks pass"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "unavailable=false" >> "$GITHUB_OUTPUT"
+            echo "❌ $PASSING/$TOTAL CI checks pass"
+          fi
+
+      # ── Reporte final ─────────────────────────────────────────────────────
+      - name: Build grader report
+        run: |
+          CI_SCORE="${{ steps.ci_passes.outputs.score }}"
+          CI_PASSED="${{ steps.ci_passes.outputs.passed }}"
+          CI_UNAVAILABLE="${{ steps.ci_passes.outputs.unavailable }}"
+
+          [ -z "$CI_SCORE" ]       && CI_SCORE="null"
+          [ -z "$CI_PASSED" ]      && CI_PASSED="null"
+          [ -z "$CI_UNAVAILABLE" ] && CI_UNAVAILABLE="true"
+
+          cat > grader-report.json << EOF
+          {
+            "schemaVersion": "1.0",
+            "templateSlug": "gpi-blue-green-canary",
+            "runId": "${{ github.run_id }}",
+            "sha": "${{ github.sha }}",
+            "metrics": [
+              {
+                "metricKey": "manifest_valid",
+                "score": ${{ steps.manifest_valid.outputs.score }},
+                "passed": ${{ steps.manifest_valid.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "rollback_documented",
+                "score": ${{ steps.rollback_documented.outputs.score }},
+                "passed": ${{ steps.rollback_documented.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "health_check_configured",
+                "score": ${{ steps.health_check_configured.outputs.score }},
+                "passed": ${{ steps.health_check_configured.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "ci_pipeline_passes",
+                "score": $CI_SCORE,
+                "passed": $CI_PASSED,
+                "unavailable": $CI_UNAVAILABLE
+              }
+            ]
+          }
+          EOF
+          cat grader-report.json
+
+      - name: Upload grader report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grader-report
+          path: grader-report.json

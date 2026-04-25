@@ -1,0 +1,68 @@
+name: CI — Validate Manifests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-compose:
+    name: Validate Docker Compose manifests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find compose files
+        id: find
+        run: |
+          FILES=""
+          for f in compose.blue-green.yml compose.blue-green.yaml \
+                    compose.canary.yml compose.canary.yaml \
+                    docker-compose.blue-green.yml docker-compose.canary.yml; do
+            if [ -f "$f" ]; then
+              FILES="$FILES $f"
+            fi
+          done
+
+          if [ -z "$FILES" ]; then
+            echo "❌ No compose files found."
+            echo "   Expected: compose.blue-green.yml  or  compose.canary.yml"
+            exit 1
+          fi
+
+          echo "found=$FILES" >> "$GITHUB_OUTPUT"
+          echo "✅ Found compose files:$FILES"
+
+      - name: Validate YAML syntax
+        run: |
+          pip install --quiet yamllint
+          for f in ${{ steps.find.outputs.found }}; do
+            echo "Validating $f..."
+            yamllint -d relaxed "$f" && echo "✅ $f — valid" || { echo "❌ $f — invalid"; exit 1; }
+          done
+
+      - name: Check healthcheck is configured
+        run: |
+          for f in ${{ steps.find.outputs.found }}; do
+            if ! grep -q "healthcheck" "$f"; then
+              echo "❌ $f does not contain a 'healthcheck' section."
+              echo "   Add a healthcheck to each app service in your compose file."
+              exit 1
+            fi
+            echo "✅ $f — healthcheck found"
+          done
+
+      - name: Check rollback documented
+        run: |
+          if [ ! -f "docs/deploy-strategy.md" ]; then
+            echo "❌ docs/deploy-strategy.md not found."
+            echo "   Create this file documenting your chosen strategy and rollback procedure."
+            exit 1
+          fi
+          if ! grep -qi "rollback" docs/deploy-strategy.md; then
+            echo "❌ docs/deploy-strategy.md does not mention 'rollback'."
+            echo "   Add a 'Rollback' section describing how to revert a failed deployment."
+            exit 1
+          fi
+          echo "✅ docs/deploy-strategy.md — rollback section found"
